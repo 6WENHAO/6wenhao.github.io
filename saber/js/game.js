@@ -25,6 +25,7 @@ let renderer, scene, camera, composer, clock;
 let synth = null, player = null;
 let env = null;
 let saberL = null, saberR = null;
+let envTex = null; // 金属反射环境贴图
 const G = {
   state: "menu",
   songIdx: 0, song: null, meta: null,
@@ -92,6 +93,8 @@ function initThree() {
     composer.addPass(bloom);
   } catch (e) { composer = null; console.warn("Bloom 不可用，使用普通渲染", e); }
 
+  envTex = makeEnvMap();
+
   clock = new THREE.Clock();
   addEventListener("resize", () => {
     camera.aspect = innerWidth / innerHeight;
@@ -108,20 +111,58 @@ function makeTex(w, h, fn) {
   fn(c.getContext("2d"), w, h);
   return new THREE.CanvasTexture(c);
 }
-let arrowTex, dotTex, glowTex, sparkTex;
+
+/* 程序化生成演播室风格环境贴图（等距柱状 → PMREM），提供金属反光 */
+function makeEnvMap() {
+  try {
+    const c = document.createElement("canvas");
+    c.width = 512; c.height = 256;
+    const g = c.getContext("2d");
+    const gr = g.createLinearGradient(0, 0, 0, 256);
+    gr.addColorStop(0, "#46507e");
+    gr.addColorStop(0.42, "#151b30");
+    gr.addColorStop(0.55, "#06080f");
+    gr.addColorStop(1, "#020309");
+    g.fillStyle = gr; g.fillRect(0, 0, 512, 256);
+    // 顶部环形灯带 + 侧向霓虹光源（磨砂金属高光来源）
+    const streak = (x, y, w2, h2, col, blur) => {
+      g.save();
+      g.shadowColor = col; g.shadowBlur = blur;
+      g.fillStyle = col;
+      g.beginPath();
+      if (g.roundRect) g.roundRect(x, y, w2, h2, h2 / 2); else g.rect(x, y, w2, h2);
+      g.fill();
+      g.restore();
+    };
+    streak(30, 28, 130, 12, "rgba(255,255,255,0.95)", 26);
+    streak(220, 20, 90, 10, "rgba(255,255,255,0.85)", 22);
+    streak(380, 32, 110, 12, "rgba(255,255,255,0.9)", 26);
+    streak(80, 88, 70, 8, "rgba(255,120,230,0.8)", 20);
+    streak(300, 96, 80, 8, "rgba(90,220,255,0.8)", 20);
+    streak(440, 84, 50, 8, "rgba(255,210,120,0.7)", 18);
+    const tex = new THREE.CanvasTexture(c);
+    tex.mapping = THREE.EquirectangularReflectionMapping;
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const rt = pmrem.fromEquirectangular(tex);
+    tex.dispose();
+    pmrem.dispose();
+    return rt.texture;
+  } catch (e) { console.warn("环境贴图生成失败", e); return null; }
+}
+let arrowTex, dotTex, glowTex, sparkTex, hotTex;
 function initTextures() {
   arrowTex = makeTex(128, 128, g => {
-    g.shadowColor = "rgba(255,255,255,0.9)"; g.shadowBlur = 10;
+    g.shadowColor = "rgba(255,255,255,0.9)"; g.shadowBlur = 12;
     g.fillStyle = "#fff";
     g.beginPath();
-    g.moveTo(64, 14); g.lineTo(112, 68); g.lineTo(84, 68);
-    g.lineTo(84, 112); g.lineTo(44, 112); g.lineTo(44, 68); g.lineTo(16, 68);
+    g.moveTo(64, 18); g.lineTo(102, 62); g.lineTo(78, 62);
+    g.lineTo(78, 110); g.lineTo(50, 110); g.lineTo(50, 62); g.lineTo(26, 62);
     g.closePath(); g.fill();
   });
   dotTex = makeTex(128, 128, g => {
     g.shadowColor = "rgba(255,255,255,0.9)"; g.shadowBlur = 12;
     g.fillStyle = "#fff";
-    g.beginPath(); g.arc(64, 64, 26, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(64, 64, 21, 0, Math.PI * 2); g.fill();
   });
   glowTex = makeTex(128, 128, g => {
     const gr = g.createRadialGradient(64, 64, 4, 64, 64, 64);
@@ -135,6 +176,19 @@ function initTextures() {
     gr.addColorStop(0, "rgba(255,255,255,1)");
     gr.addColorStop(1, "rgba(255,255,255,0)");
     g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  });
+  // 切割断面：边缘高亮 + 熔融微光
+  hotTex = makeTex(128, 128, g => {
+    const gr = g.createRadialGradient(64, 64, 8, 64, 64, 84);
+    gr.addColorStop(0, "rgba(255,255,255,0.5)");
+    gr.addColorStop(0.7, "rgba(255,255,255,0.18)");
+    gr.addColorStop(1, "rgba(255,255,255,0.05)");
+    g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+    g.lineWidth = 9;
+    g.strokeStyle = "rgba(255,255,255,1)";
+    g.shadowColor = "#fff"; g.shadowBlur = 16;
+    g.strokeRect(5, 5, 118, 118);
+    g.strokeRect(5, 5, 118, 118);
   });
 }
 
@@ -375,19 +429,40 @@ class Saber {
 /* ============================================================
  * 方块 / 炸弹 / 光墙
  * ============================================================ */
-let noteGeo, arrowGeo, bombGeo, halfGeo;
-let matL, matR, arrowMat, dotMat, bombMat, wallMat;
+let noteGeo, arrowGeo, faceGlowGeo, bombGeo, halfGeo, hotGeo;
+let matL, matR, arrowMat, dotMat, arrowGlowMat, dotGlowMat, bombMat, wallMat;
 function initSongAssets(meta) {
-  noteGeo = noteGeo || new THREE.BoxGeometry(0.5, 0.5, 0.5);
-  arrowGeo = arrowGeo || new THREE.PlaneGeometry(0.36, 0.36);
+  const RB = THREE.RoundedBoxGeometry;
+  noteGeo = noteGeo || (RB ? new RB(0.5, 0.5, 0.5, 4, 0.075) : new THREE.BoxGeometry(0.5, 0.5, 0.5));
+  halfGeo = halfGeo || (RB ? new RB(0.5, 0.24, 0.5, 3, 0.05) : new THREE.BoxGeometry(0.5, 0.24, 0.5));
+  arrowGeo = arrowGeo || new THREE.PlaneGeometry(0.32, 0.32);
+  faceGlowGeo = faceGlowGeo || new THREE.PlaneGeometry(0.42, 0.42);
   bombGeo = bombGeo || new THREE.IcosahedronGeometry(0.23, 1);
-  halfGeo = halfGeo || new THREE.BoxGeometry(0.5, 0.24, 0.5);
-  const dim = c => new THREE.Color(c).multiplyScalar(0.22);
-  matL = new THREE.MeshLambertMaterial({ color: dim(meta.colorL), emissive: meta.colorL, emissiveIntensity: 0.75 });
-  matR = new THREE.MeshLambertMaterial({ color: dim(meta.colorR), emissive: meta.colorR, emissiveIntensity: 0.75 });
+  hotGeo = hotGeo || new THREE.PlaneGeometry(0.46, 0.46);
+  const dim = c => new THREE.Color(c).multiplyScalar(0.55);
+  const metal = c => new THREE.MeshStandardMaterial({
+    color: dim(c), metalness: 0.88, roughness: 0.42,          // 金属磨砂
+    envMap: envTex, envMapIntensity: 1.35,
+    emissive: c, emissiveIntensity: 0.3
+  });
+  matL = metal(meta.colorL);
+  matR = metal(meta.colorR);
   arrowMat = new THREE.MeshBasicMaterial({ map: arrowTex, transparent: true, depthWrite: false });
   dotMat = new THREE.MeshBasicMaterial({ map: dotTex, transparent: true, depthWrite: false });
-  bombMat = new THREE.MeshLambertMaterial({ color: 0x0c0c10, emissive: 0x330000, emissiveIntensity: 0.9 });
+  // 箭头辉光层（叠加发光）
+  arrowGlowMat = new THREE.MeshBasicMaterial({
+    map: arrowTex, transparent: true, opacity: 0.5,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  dotGlowMat = new THREE.MeshBasicMaterial({
+    map: dotTex, transparent: true, opacity: 0.5,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  bombMat = new THREE.MeshStandardMaterial({
+    color: 0x0d0d13, metalness: 0.92, roughness: 0.32,
+    envMap: envTex, envMapIntensity: 1.1,
+    emissive: 0x330000, emissiveIntensity: 1
+  });
   wallMat = new THREE.MeshBasicMaterial({ color: 0xff2233, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide });
 }
 
@@ -402,10 +477,15 @@ function spawnNote(d) {
     g.add(glow);
   } else {
     g.add(new THREE.Mesh(noteGeo, d.type === 0 ? matL : matR));
+    const rot = DIR_ROT[d.dir];
     const face = new THREE.Mesh(arrowGeo, d.dir === 8 ? dotMat : arrowMat);
-    face.position.z = 0.26;
-    face.rotation.z = DIR_ROT[d.dir];
+    face.position.z = 0.258;
+    face.rotation.z = rot;
     g.add(face);
+    const halo = new THREE.Mesh(faceGlowGeo, d.dir === 8 ? dotGlowMat : arrowGlowMat);
+    halo.position.z = 0.254;
+    halo.rotation.z = rot;
+    g.add(halo);
   }
   g.position.set(LANE_X[d.x], ROW_Y[d.y], G.hitZ - SPAWN_DIST);
   g.userData.spin = (Math.random() - 0.5) * 1.4;
@@ -429,25 +509,38 @@ function spawnWall(w) {
 /* ---------------- 切割特效 ---------------- */
 function spawnHalves(note, angle, sp, good) {
   const src = note.d.type === 0 ? matL : matR;
+  const noteCol = note.d.type === 0 ? G.meta.colorL : G.meta.colorR;
+  const nx = -Math.sin(angle), ny = Math.cos(angle);
   for (let s = -1; s <= 1; s += 2) {
+    const grp = new THREE.Group();
     const mat = src.clone();
     mat.transparent = true;
-    if (!good) mat.emissiveIntensity = 0.25;
-    const m = new THREE.Mesh(halfGeo, mat);
-    m.position.copy(note.g.position);
-    m.rotation.z = angle;
-    const nx = -Math.sin(angle), ny = Math.cos(angle);
-    m.position.x += nx * 0.13 * s;
-    m.position.y += ny * 0.13 * s;
+    if (!good) mat.emissiveIntensity = 0.12;
+    grp.add(new THREE.Mesh(halfGeo, mat));
+    // 断面：熔融高亮边缘
+    const hotBase = good ? 1 : 0.35;
+    const hotMat = new THREE.MeshBasicMaterial({
+      map: hotTex, transparent: true, opacity: hotBase,
+      color: new THREE.Color(noteCol).lerp(new THREE.Color(0xffffff), good ? 0.6 : 0.15),
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+    });
+    const hot = new THREE.Mesh(hotGeo, hotMat);
+    hot.rotation.x = s * Math.PI / 2;   // 朝向切割断面
+    hot.position.y = -s * 0.122;
+    grp.add(hot);
+    grp.position.copy(note.g.position);
+    grp.rotation.z = angle;
+    grp.position.x += nx * 0.13 * s;
+    grp.position.y += ny * 0.13 * s;
     G.halves.push({
-      m,
+      m: grp, mat, hotMat, hotBase,
       vx: nx * s * (1.6 + sp * 0.25) + (Math.random() - 0.5),
       vy: ny * s * (1.6 + sp * 0.25) + 1.2,
       vz: 3.5 + Math.random() * 2,
       rx: (Math.random() - 0.5) * 9, rz: (Math.random() - 0.5) * 9,
       life: 0.7
     });
-    scene.add(m);
+    scene.add(grp);
   }
 }
 
@@ -704,6 +797,17 @@ function startSong(idx) {
 
   if (env) env.dispose();
   env = createEnv(G.meta.env, scene, G.meta.colorL, G.meta.colorR);
+  // 倒计时期间预热方块着色器（微缩渲染 1 次，避免首块出现时掉帧）
+  if (G.warm) scene.remove(G.warm);
+  G.warm = new THREE.Group();
+  [matL, matR, bombMat].forEach((m, i) => {
+    const w = new THREE.Mesh(noteGeo, m);
+    w.position.x = (i - 1) * 0.01;
+    G.warm.add(w);
+  });
+  G.warm.scale.setScalar(0.001);
+  G.warm.position.set(0, 1.6, -6);
+  scene.add(G.warm);
   if (saberL) saberL.dispose();
   if (saberR) saberR.dispose();
   saberL = new Saber("L", G.meta.colorL, G.meta.env);
@@ -765,7 +869,7 @@ function startSong(idx) {
 function clearPlayfield() {
   G.notes.forEach(n => scene.remove(n.g));
   G.walls.forEach(w => { scene.remove(w.m); w.m.geometry.dispose(); });
-  G.halves.forEach(h => { scene.remove(h.m); h.m.material.dispose(); });
+  G.halves.forEach(h => { scene.remove(h.m); h.mat.dispose(); h.hotMat.dispose(); });
   G.bursts.forEach(b => { scene.remove(b.pts); b.pts.geometry.dispose(); b.pts.material.dispose(); });
   G.texts.forEach(t => { scene.remove(t.sp); if (t.tex) t.tex.dispose(); t.sp.material.dispose(); });
   G.notes = []; G.walls = []; G.halves = []; G.bursts = []; G.texts = [];
@@ -912,6 +1016,7 @@ function tick() {
       const beat = Math.floor((t - (G.song.beatOffset || 0)) / G.song.spb);
       if (beat !== G.lastBeat) { G.lastBeat = beat; if (env) env.onBeat(beat); }
     }
+    if (G.warm && t > -1.5) { scene.remove(G.warm); G.warm = null; }
 
     // 生成
     const ahead = SPAWN_DIST / G.meta.speed;
@@ -1025,7 +1130,9 @@ function tick() {
     const h = G.halves[i];
     h.life -= dt;
     if (h.life <= 0) {
-      scene.remove(h.m); h.m.material.dispose();
+      scene.remove(h.m);
+      h.mat.dispose();
+      h.hotMat.dispose();
       G.halves.splice(i, 1); continue;
     }
     h.vy -= 8 * dt;
@@ -1034,7 +1141,9 @@ function tick() {
     h.m.position.z += h.vz * dt;
     h.m.rotation.x += h.rx * dt;
     h.m.rotation.z += h.rz * dt;
-    h.m.material.opacity = h.life / 0.7;
+    const k = h.life / 0.7;
+    h.mat.opacity = k;
+    h.hotMat.opacity = h.hotBase * Math.pow(k, 0.5); // 断面亮光稍慢熄灭
   }
   // 火花
   for (let i = G.bursts.length - 1; i >= 0; i--) {
