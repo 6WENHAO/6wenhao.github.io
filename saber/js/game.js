@@ -46,8 +46,9 @@ const G = {
 const XR = {
   supported: false, active: false, session: null,
   ctrlL: null, ctrlR: null, srcL: null, srcR: null,
+  handL: null, handR: null, useHands: false, pinchL: 0, pinchR: 0,
   rays: [], menuGroup: null, menuPanels: [], hovered: -2,
-  autoPanel: null, hoverAuto: false,
+  autoPanel: null, hoverAuto: false, reticle: null,
   hud: null, msg: null, hudTimer: 0, wallHapT: 0
 };
 const NEED = [2, 4, 8];
@@ -337,6 +338,28 @@ class Saber {
     this.trail.update(this.tipV, this.baseV);
     this._fx(dt);
   }
+  updateFromHand(dt, hand) { // Vision Pro 手部追踪模式
+    if (hand && hand.joints) {
+      const w = hand.joints["wrist"];
+      const m = hand.joints["middle-finger-metacarpal"] || hand.joints["middle-finger-phalanx-proximal"];
+      if (w && m) {
+        _hw.setFromMatrixPosition(w.matrixWorld);
+        _hm.setFromMatrixPosition(m.matrixWorld);
+        _hd.subVectors(_hm, _hw);
+        if (_hd.lengthSq() > 1e-8) {
+          _hd.normalize();
+          this.group.position.copy(_hm);
+          _hq.setFromUnitVectors(_yUp, _hd); // 剑刃沿腕→掌方向（前臂延伸）
+          this.group.quaternion.slerp(_hq, 1 - Math.exp(-dt * 30));
+        }
+      }
+    }
+    this._sampleBlade();
+    this.vel.subVectors(this.tipV, this.prevTipV).divideScalar(dt || 1e-4);
+    this.speed = this.vel.length();
+    this.trail.update(this.tipV, this.baseV);
+    this._fx(dt);
+  }
   dispose() {
     if (this.group.parent) this.group.parent.remove(this.group);
     scene.remove(this.trail.mesh);
@@ -610,6 +633,8 @@ function distToSeg(px, py, ax, ay, bx, by) {
   return Math.hypot(px - cx, py - cy);
 }
 const _sv1 = new THREE.Vector3(), _sv2 = new THREE.Vector3(), _sv3 = new THREE.Vector3();
+const _hw = new THREE.Vector3(), _hm = new THREE.Vector3(), _hd = new THREE.Vector3();
+const _hq = new THREE.Quaternion(), _yUp = new THREE.Vector3(0, 1, 0);
 function distPointSeg3(p, a, b) {
   _sv1.subVectors(b, a);
   const l2 = _sv1.lengthSq();
@@ -685,7 +710,7 @@ function startSong(idx) {
   saberR = new Saber("R", G.meta.colorR, G.meta.env);
   if (G.auto) {
     saberL.pos.z = saberR.pos.z = G.hitZ; // 自动演示：世界空间自主挥剑
-  } else if (XR.active) {
+  } else if (XR.active && !XR.useHands) {
     if (XR.ctrlL) saberL.attachTo(XR.ctrlL, true);
     if (XR.ctrlR) saberR.attachTo(XR.ctrlR, true);
   }
@@ -746,13 +771,20 @@ function clearPlayfield() {
   G.notes = []; G.walls = []; G.halves = []; G.bursts = []; G.texts = [];
 }
 
+/* VR 内操作提示（手柄 / 手势自适应） */
+function xrHint(primary, secondary) {
+  return XR.useHands
+    ? `右手捏合 ${primary} · 左手捏合 ${secondary}`
+    : `扳机 ${primary} · 握把 ${secondary}`;
+}
+
 function pauseSong() {
   if (G.state !== "playing") return;
   G.state = "paused";
   synth.ctx.suspend();
   dom.pause.classList.remove("hidden");
   document.body.classList.remove("playing-cursor");
-  if (XR.active) drawVRMsg(["已暂停", "扳机 继续 · 握把 返回菜单"]);
+  if (XR.active) drawVRMsg(["已暂停", xrHint("继续", "返回菜单")]);
 }
 function resumeSong() {
   if (G.state !== "paused") return;
@@ -795,7 +827,7 @@ function failSong() {
   if (XR.active) drawVRMsg([
     "能量耗尽",
     `完成度 ${Math.round(G.t / G.song.duration * 100)}% · 得分 ${G.score.toLocaleString()}`,
-    "扳机 重试 · 握把 返回菜单"
+    xrHint("重试", "返回菜单")
   ]);
 }
 function finishSong() {
@@ -816,7 +848,7 @@ function finishSong() {
     (G.auto ? "纯享演示 · " : "") + (fc ? "全连击！FULL COMBO" : "通关！"),
     `评级 ${rank} · 得分 ${G.score.toLocaleString()}`,
     `准确率 ${(acc * 100).toFixed(1)}% · 最高连击 ${G.maxCombo}`,
-    "扳机 再来一次 · 握把 返回菜单"
+    xrHint("再来一次", "返回菜单")
   ]);
 }
 
@@ -945,6 +977,9 @@ function tick() {
       const ta = autoAim(saberL, t), tb = autoAim(saberR, t);
       saberL.update(dt, ta.x, ta.y);
       saberR.update(dt, tb.x, tb.y);
+    } else if (XR.active && XR.useHands) {
+      saberL.updateFromHand(dt, XR.handL);
+      saberR.updateFromHand(dt, XR.handR);
     } else if (XR.active) {
       saberL.updateVR(dt);
       saberR.updateVR(dt);
@@ -1431,7 +1466,7 @@ function buildVRMenu() {
   tc.fillText("节奏光剑 · 选择曲目", 512, 70);
   tc.shadowBlur = 0;
   tc.font = "34px sans-serif"; tc.fillStyle = "#8f9bd4";
-  tc.fillText("手柄指向曲目扣扳机 · 游戏中握把键暂停", 512, 150);
+  tc.fillText("手柄指向扣扳机 / 注视并捏合确认 · 游戏中握把或双手捏合暂停", 512, 150);
   title.tex.needsUpdate = true;
   title.mesh.position.set(0, 2.75, -3.4);
   g.add(title.mesh);
@@ -1468,17 +1503,36 @@ const _rc = new THREE.Raycaster();
 const _rcMat = new THREE.Matrix4();
 function updateVRMenuHover() {
   const c = XR.ctrlR || XR.ctrlL;
-  let idx = -1, hoverAuto = false;
-  if (c) {
+  let idx = -1, hoverAuto = false, hasRay = false;
+  if (XR.useHands || !c) {
+    // Vision Pro：注视选择
+    if (XR.active) {
+      _rcMat.identity().extractRotation(camera.matrixWorld);
+      _rc.ray.origin.setFromMatrixPosition(camera.matrixWorld);
+      _rc.ray.direction.set(0, 0, -1).applyMatrix4(_rcMat);
+      hasRay = true;
+    }
+  } else {
     _rcMat.identity().extractRotation(c.matrixWorld);
     _rc.ray.origin.setFromMatrixPosition(c.matrixWorld);
     _rc.ray.direction.set(0, 0, -1).applyMatrix4(_rcMat);
+    hasRay = true;
+  }
+  if (hasRay) {
     const targets = XR.menuPanels.map(p => p.mesh);
     if (XR.autoPanel) targets.push(XR.autoPanel.mesh);
     const hits = _rc.intersectObjects(targets, false);
     if (hits.length) {
       if (XR.autoPanel && hits[0].object === XR.autoPanel.mesh) hoverAuto = true;
       else idx = XR.menuPanels.findIndex(p => p.mesh === hits[0].object);
+    }
+  }
+  // 凝视光标
+  if (XR.reticle) {
+    XR.reticle.visible = XR.useHands && XR.active;
+    if (XR.reticle.visible) {
+      XR.reticle.position.copy(_rc.ray.origin).addScaledVector(_rc.ray.direction, 2.3);
+      XR.reticle.material.opacity = (idx >= 0 || hoverAuto) ? 0.95 : 0.4;
     }
   }
   if (hoverAuto !== XR.hoverAuto) {
@@ -1500,6 +1554,7 @@ function updateVRMenuHover() {
 
 /* ---------- 手柄事件 ---------- */
 function onXRSelect() {
+  if (XR.useHands) return; // 手势模式由会话级 pinch 事件处理
   switch (G.state) {
     case "vrmenu":
       if (XR.hoverAuto) {
@@ -1516,6 +1571,7 @@ function onXRSelect() {
   }
 }
 function onXRSqueeze() {
+  if (XR.useHands) return;
   switch (G.state) {
     case "playing": pauseSong(); break;
     case "paused":
@@ -1524,7 +1580,7 @@ function onXRSqueeze() {
   }
 }
 function reattachSabers() {
-  if (!XR.active || G.auto) return;
+  if (!XR.active || G.auto || XR.useHands) return;
   if (saberL && XR.ctrlL) saberL.attachTo(XR.ctrlL, true);
   if (saberR && XR.ctrlR) saberR.attachTo(XR.ctrlR, true);
 }
@@ -1532,6 +1588,8 @@ function initControllers() {
   for (let i = 0; i < 2; i++) {
     const c = renderer.xr.getController(i);
     c.addEventListener("connected", e => {
+      // Vision Pro 的瞬态捏合指针不占用手柄位
+      if (e.data.targetRayMode === "transient-pointer") return;
       if (e.data.handedness === "left") { XR.ctrlL = c; XR.srcL = e.data; }
       else { XR.ctrlR = c; XR.srcR = e.data; }
       reattachSabers();
@@ -1551,6 +1609,55 @@ function initControllers() {
     c.add(ray);
     XR.rays.push(ray);
     scene.add(c);
+
+    // Vision Pro / Quest 手部追踪
+    const h = renderer.xr.getHand(i);
+    h.addEventListener("connected", e => {
+      if (!e.data.hand) return;
+      if (e.data.handedness === "left") XR.handL = h; else XR.handR = h;
+      XR.useHands = true;
+      setRayVisible(false);
+      reattachSabers();
+    });
+    h.addEventListener("disconnected", () => {
+      if (XR.handL === h) XR.handL = null;
+      if (XR.handR === h) XR.handR = null;
+      if (!XR.handL && !XR.handR) XR.useHands = false;
+    });
+    scene.add(h);
+  }
+}
+
+/* ---------- Vision Pro 手势（注视 + 捏合） ---------- */
+function onXRSessionSelect(e) {
+  if (!XR.useHands) return;
+  const hand = e.inputSource ? e.inputSource.handedness : "right";
+  switch (G.state) {
+    case "vrmenu":
+      if (XR.hoverAuto) {
+        G.auto = !G.auto;
+        $("auto-toggle").classList.toggle("on", G.auto);
+        drawAutoPanel(true);
+        if (synth) synth.sfxClick();
+      } else if (XR.hovered >= 0) startSong(XR.hovered);
+      break;
+    case "playing": {
+      // 双手同时捏合（600ms 内）暂停，避免挥剑误触
+      const now = performance.now();
+      if (hand === "left") XR.pinchL = now; else XR.pinchR = now;
+      if (Math.abs(XR.pinchL - XR.pinchR) < 600 && XR.pinchL > 0 && XR.pinchR > 0) {
+        XR.pinchL = XR.pinchR = 0;
+        pauseSong();
+      }
+      break;
+    }
+    case "paused":
+      if (hand === "left") quitToMenu(); else resumeSong();
+      break;
+    case "results":
+    case "failed":
+      if (hand === "left") quitToMenu(); else startSong(G.songIdx);
+      break;
   }
 }
 
@@ -1563,6 +1670,13 @@ function initVRUI() {
   XR.msg.mesh.position.set(0, 1.75, -3.6);
   XR.msg.mesh.visible = false;
   scene.add(XR.msg.mesh);
+  XR.reticle = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex, color: 0xaaccff, transparent: true, opacity: 0.5,
+    blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false
+  }));
+  XR.reticle.scale.set(0.06, 0.06, 1);
+  XR.reticle.visible = false;
+  scene.add(XR.reticle);
   buildVRMenu();
 }
 
@@ -1571,11 +1685,12 @@ async function enterVR() {
   ensureAudio();
   try {
     const s = await navigator.xr.requestSession("immersive-vr", {
-      optionalFeatures: ["local-floor", "bounded-floor"]
+      optionalFeatures: ["local-floor", "bounded-floor", "hand-tracking"]
     });
     renderer.xr.setSession(s);
     XR.session = s; XR.active = true;
     s.addEventListener("end", onXREnd);
+    s.addEventListener("select", onXRSessionSelect);
     dom.menu.classList.add("hidden");
     G.state = "vrmenu";
     showVRMenu();
@@ -1586,6 +1701,9 @@ async function enterVR() {
 }
 function onXREnd() {
   XR.active = false; XR.session = null;
+  XR.handL = null; XR.handR = null; XR.useHands = false;
+  XR.pinchL = XR.pinchR = 0;
+  if (XR.reticle) XR.reticle.visible = false;
   if (player) player.stop();
   clearPlayfield();
   if (env) { env.dispose(); env = null; }
