@@ -37,6 +37,8 @@ const G = {
   lean: 0, leanTarget: 0, shake: 0,
   hitZ: SABER_Z, hexL: "#ff2bd0", hexR: "#00e5ff",
   mouse: { x: 0.35, y: 0.3 },
+  customIdx: null,
+  auto: false,
   pausedByBlur: false
 };
 
@@ -45,6 +47,7 @@ const XR = {
   supported: false, active: false, session: null,
   ctrlL: null, ctrlR: null, srcL: null, srcR: null,
   rays: [], menuGroup: null, menuPanels: [], hovered: -2,
+  autoPanel: null, hoverAuto: false,
   hud: null, msg: null, hudTimer: 0, wallHapT: 0
 };
 const NEED = [2, 4, 8];
@@ -493,6 +496,7 @@ function breakCombo() {
   dom.combo.textContent = "0";
 }
 function addEnergy(v) {
+  if (G.auto && v < 0) return; // 纯享模式永不失败
   G.energy = THREE.MathUtils.clamp(G.energy + v, 0, 1);
   dom.energy_fill.style.width = (G.energy * 100) + "%";
   dom.energy_fill.classList.toggle("low", G.energy < 0.3);
@@ -520,6 +524,28 @@ function haptic(src, amp, ms) {
 function saberHaptic(saber, amp, ms) {
   if (!XR.active) return;
   haptic(saber.hand === "L" ? XR.srcL : XR.srcR, amp, ms);
+}
+
+/* ---------------- 纯享模式：光剑自动演示 ---------------- */
+function autoAim(saber, t) {
+  const type = saber.hand === "L" ? 0 : 1;
+  let target = null;
+  for (const n of G.notes) {
+    if (n.cut || n.missed || n.d.type !== type) continue;
+    if (!target || n.d.t < target.d.t) target = n;
+  }
+  if (!target || target.d.t - t > 1.6) {
+    const ix = saber.hand === "L" ? -0.55 : 0.55;
+    const ph = type ? 1.7 : 0;
+    return { x: ix + Math.sin(t * 1.3 + ph) * 0.14, y: 1.15 + Math.sin(t * 1.8 + ph) * 0.09 };
+  }
+  const d = target.d;
+  const nx = LANE_X[d.x], ny = ROW_Y[d.y];
+  const dv = DIR_VEC[d.dir === 8 ? 1 : d.dir]; // 圆点按下切处理
+  if (d.t - t > 0.05) {
+    return { x: nx - dv[0] * 0.55, y: ny - dv[1] * 0.55 }; // 预备位
+  }
+  return { x: nx + dv[0] * 0.85, y: ny + dv[1] * 0.85 };  // 挥砍穿过
 }
 
 function goodCut(note, saber, dist) {
@@ -594,7 +620,7 @@ function distPointSeg3(p, a, b) {
 }
 
 function checkCuts() {
-  const vr = XR.active;
+  const vr = XR.active && !G.auto; // 纯享模式统一用平面扫掠判定
   const minSpeed = vr ? 0.9 : MIN_SPEED;
   const radius = vr ? 0.5 : CUT_RADIUS;
   for (const saber of [saberL, saberR]) {
@@ -616,7 +642,7 @@ function checkCuts() {
         );
       }
       if (note.d.type === 3) {
-        if (d < 0.42) bombHit(note);
+        if (!G.auto && d < 0.42) bombHit(note); // 纯享模式不碰炸弹
         continue;
       }
       if (d > radius || saber.speed < minSpeed) continue;
@@ -657,7 +683,9 @@ function startSong(idx) {
   if (saberR) saberR.dispose();
   saberL = new Saber("L", G.meta.colorL, G.meta.env);
   saberR = new Saber("R", G.meta.colorR, G.meta.env);
-  if (XR.active) {
+  if (G.auto) {
+    saberL.pos.z = saberR.pos.z = G.hitZ; // 自动演示：世界空间自主挥剑
+  } else if (XR.active) {
     if (XR.ctrlL) saberL.attachTo(XR.ctrlL, true);
     if (XR.ctrlR) saberR.attachTo(XR.ctrlR, true);
   }
@@ -681,7 +709,7 @@ function startSong(idx) {
     G.cumMax.push(G.cumMax[i - 1] + 115 * m);
   }
 
-  dom.song_label.innerHTML = `《${G.meta.name}》<small>${G.meta.style} · ${G.meta.bpm} BPM</small>`;
+  dom.song_label.innerHTML = `《${G.meta.name}》<small>${G.meta.style} · ${G.meta.bpm} BPM${G.auto ? " · 纯享演示" : ""}</small>`;
   dom.energy_fill.style.width = "50%";
   dom.combo.textContent = "0";
   updateHUD();
@@ -693,7 +721,7 @@ function startSong(idx) {
   dom.hud.classList.remove("hidden");
   dom.countdown.classList.remove("hidden");
   dom.count_num.textContent = "";
-  if (!XR.active) document.body.classList.add("playing-cursor");
+  if (!XR.active && !G.auto) document.body.classList.add("playing-cursor");
   if (XR.active) {
     XR.menuGroup.visible = false;
     setRayVisible(false);
@@ -703,6 +731,7 @@ function startSong(idx) {
   }
 
   player.load(G.song.events);
+  if (G.song.buffer) player.loadBuffer(G.song.buffer);
   G.startAt = synth.ctx.currentTime + 3.6;
   player.start(G.startAt);
   G.state = "playing";
@@ -775,7 +804,7 @@ function finishSong() {
   const acc = G.score / accMax;
   const rank = acc >= 0.95 ? "SS" : acc >= 0.9 ? "S" : acc >= 0.8 ? "A" : acc >= 0.65 ? "B" : acc >= 0.5 ? "C" : "D";
   const fc = G.hits === G.totalNotes && G.totalNotes > 0;
-  dom.results_title.textContent = fc ? "全连击！FULL COMBO" : "通关！";
+  dom.results_title.textContent = (G.auto ? "纯享演示 · " : "") + (fc ? "全连击！FULL COMBO" : "通关！");
   dom.rank.textContent = rank;
   dom.r_score.textContent = G.score.toLocaleString();
   dom.r_acc.textContent = (acc * 100).toFixed(1) + "%";
@@ -784,7 +813,7 @@ function finishSong() {
   dom.results.classList.remove("hidden");
   document.body.classList.remove("playing-cursor");
   if (XR.active) drawVRMsg([
-    fc ? "全连击！FULL COMBO" : "通关！",
+    (G.auto ? "纯享演示 · " : "") + (fc ? "全连击！FULL COMBO" : "通关！"),
     `评级 ${rank} · 得分 ${G.score.toLocaleString()}`,
     `准确率 ${(acc * 100).toFixed(1)}% · 最高连击 ${G.maxCombo}`,
     "扳机 再来一次 · 握把 返回菜单"
@@ -846,9 +875,9 @@ function tick() {
       if (XR.active) hideVRMsg();
     }
 
-    // 节拍脉冲
+    // 节拍脉冲（自定义歌曲带相位偏移）
     if (t >= 0) {
-      const beat = Math.floor(t / G.song.spb);
+      const beat = Math.floor((t - (G.song.beatOffset || 0)) / G.song.spb);
       if (beat !== G.lastBeat) { G.lastBeat = beat; if (env) env.onBeat(beat); }
     }
 
@@ -898,7 +927,7 @@ function tick() {
         G.walls.splice(i, 1);
       }
     }
-    if (inWall) {
+    if (inWall && !G.auto) {
       addEnergy(-0.22 * dt);
       dom.vignette.style.opacity = 0.85;
       G.shake = Math.min(0.6, G.shake + dt * 2);
@@ -912,7 +941,11 @@ function tick() {
     }
 
     // 光剑
-    if (XR.active) {
+    if (G.auto) {
+      const ta = autoAim(saberL, t), tb = autoAim(saberR, t);
+      saberL.update(dt, ta.x, ta.y);
+      saberR.update(dt, tb.x, tb.y);
+    } else if (XR.active) {
       saberL.updateVR(dt);
       saberR.updateVR(dt);
     } else {
@@ -924,6 +957,13 @@ function tick() {
 
     // 相机侧身（VR 中由头显姿态控制，跳过）
     if (!XR.active) {
+      if (G.auto) { // 自动躲墙
+        G.leanTarget = 0;
+        for (const o of G.walls) {
+          const frontZ = G.hitZ + (t - o.w.t) * G.meta.speed;
+          if (frontZ > -14 && frontZ - o.len < 1) { G.leanTarget = -o.w.side * 0.85; break; }
+        }
+      }
       G.lean += (G.leanTarget - G.lean) * (1 - Math.exp(-dt * 9));
       camera.position.x = G.lean;
       camera.rotation.z = -G.lean * 0.07;
@@ -1031,6 +1071,12 @@ function initInput() {
   $("btn-menu").onclick = () => quitToMenu();
   $("btn-retry").onclick = () => startSong(G.songIdx);
   $("btn-fail-menu").onclick = () => quitToMenu();
+  $("auto-toggle").onclick = () => {
+    G.auto = !G.auto;
+    $("auto-toggle").classList.toggle("on", G.auto);
+    if (synth) synth.sfxClick();
+    if (XR.autoPanel) { drawAutoPanel(false); }
+  };
 }
 
 function buildMenu() {
@@ -1054,6 +1100,173 @@ function buildMenu() {
     card.onclick = () => { ensureAudio(); synth.sfxClick(); startSong(i); };
     dom.cards.appendChild(card);
   });
+  createUploadCard();
+}
+
+/* ============================================================
+ * 本地音乐上传 → 自动谱面
+ * ============================================================ */
+const ENV_THEME = {
+  neon: { style: "赛博霓虹" },
+  ink: { style: "水墨夜山" },
+  space: { style: "深空星云" }
+};
+let uploadCard = null, uploadInput = null, uploadBusy = false;
+
+function createUploadCard() {
+  uploadInput = document.createElement("input");
+  uploadInput.type = "file";
+  uploadInput.accept = "audio/*,.mp3,.wav,.m4a,.ogg,.flac,.aac";
+  uploadInput.style.display = "none";
+  uploadInput.onchange = () => {
+    if (uploadInput.files && uploadInput.files[0]) handleMusicFile(uploadInput.files[0]);
+    uploadInput.value = "";
+  };
+  document.body.appendChild(uploadInput);
+
+  uploadCard = document.createElement("div");
+  uploadCard.className = "card upload-card";
+  uploadCard.style.setProperty("--ac", "#ffd76e");
+  uploadCard.style.setProperty("--acGlow", "#ffd76e55");
+  uploadCard.style.setProperty("--envBg", "linear-gradient(160deg,#20242f,#161a26 55%,#101420)");
+  drawUploadIdle();
+  dom.cards.appendChild(uploadCard);
+
+  addEventListener("dragover", e => e.preventDefault());
+  addEventListener("drop", e => {
+    e.preventDefault();
+    if (G.state !== "menu" || uploadBusy) return;
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) handleMusicFile(f);
+  });
+}
+
+function drawUploadIdle(statusText, isErr) {
+  uploadCard.innerHTML = `
+    <div class="env upload-plus">＋</div>
+    <h2>上传音乐</h2>
+    <h3>AUTO MAP · 本地歌曲</h3>
+    <p>${statusText
+      ? `<span style="color:${isErr ? "#ff6677" : "#ffd76e"}">${statusText}</span>`
+      : "点击选择或拖入音频文件（mp3 / wav / m4a…），自动分析节拍与情绪，生成谱面与匹配场景。"}</p>
+    <div class="meta"><span>本地文件不会上传</span><span class="diff">自动难度</span></div>`;
+  uploadCard.onclick = () => { if (!uploadBusy) { ensureAudio(); uploadInput.click(); } };
+}
+
+function fmtTime(s) {
+  const m = Math.floor(s / 60), ss = Math.round(s % 60);
+  return m + ":" + String(ss).padStart(2, "0");
+}
+
+function drawUploadReady(meta) {
+  const hexR = "#" + meta.colorR.toString(16).padStart(6, "0");
+  uploadCard.style.setProperty("--ac", hexR);
+  uploadCard.style.setProperty("--acGlow", hexR + "55");
+  uploadCard.style.setProperty("--envBg", meta.cardBg);
+  const name = meta.name.length > 10 ? meta.name.slice(0, 10) + "…" : meta.name;
+  uploadCard.innerHTML = `
+    <div class="env"></div>
+    <h2>${name}</h2>
+    <h3>CUSTOM · ${ENV_THEME[meta.env].style}</h3>
+    <p>${meta.bpm} BPM · ${meta.noteCount} 方块 · ${fmtTime(meta.duration)}<br>
+    场景：<span class="env-pick">
+      <span data-env="neon" class="${meta.env === "neon" ? "sel" : ""}">霓虹</span>
+      <span data-env="ink" class="${meta.env === "ink" ? "sel" : ""}">水墨</span>
+      <span data-env="space" class="${meta.env === "space" ? "sel" : ""}">星空</span>
+    </span></p>
+    <div class="meta"><span class="rechoose">换一首</span><span class="diff">难度 · ${meta.diff}</span></div>`;
+  uploadCard.onclick = () => { ensureAudio(); synth.sfxClick(); startSong(G.customIdx); };
+  uploadCard.querySelector(".rechoose").onclick = e => {
+    e.stopPropagation();
+    if (!uploadBusy) { ensureAudio(); uploadInput.click(); }
+  };
+  uploadCard.querySelectorAll(".env-pick span").forEach(el => {
+    el.onclick = e => {
+      e.stopPropagation();
+      setCustomEnv(el.dataset.env);
+    };
+  });
+}
+
+function setCustomEnv(envId) {
+  const meta = SONGS[G.customIdx];
+  if (!meta || meta.env === envId) return;
+  const ref = SONGS.find(s => s.env === envId && !s.custom);
+  meta.env = envId;
+  meta.colorL = ref.colorL;
+  meta.colorR = ref.colorR;
+  meta.cardBg = ref.cardBg;
+  meta.style = "自定义 · " + ENV_THEME[envId].style;
+  drawUploadReady(meta);
+  updateVRCustomPanel();
+  if (synth) synth.sfxClick();
+}
+
+async function handleMusicFile(file) {
+  if (uploadBusy) return;
+  uploadBusy = true;
+  ensureAudio();
+  try {
+    drawUploadIdle("解码音频…");
+    const arr = await file.arrayBuffer();
+    const buf = await synth.ctx.decodeAudioData(arr);
+    if (buf.duration < 20) throw new Error("音频太短，至少需要 20 秒");
+    if (buf.duration > 600) throw new Error("音频太长，请控制在 10 分钟内");
+    const res = await analyzeAudioBuffer(buf, s => drawUploadIdle(s));
+    if (res.notes.length < 10) throw new Error("节拍太弱，无法生成有效谱面");
+    registerCustomSong(file.name.replace(/\.[^.]+$/, ""), buf, res);
+    if (synth) synth.sfxCount(true);
+  } catch (e) {
+    drawUploadIdle("失败：" + (e && e.message ? e.message : "无法解码该文件"), true);
+  }
+  uploadBusy = false;
+}
+
+function registerCustomSong(name, buffer, res) {
+  const ref = SONGS.find(s => s.env === res.mood && !s.custom);
+  const noteCount = res.notes.filter(n => n.type !== 3).length;
+  const nps = noteCount / res.duration;
+  const meta = {
+    id: "custom",
+    name, en: "CUSTOM",
+    style: "自定义 · " + ENV_THEME[res.mood].style,
+    desc: `本地音乐自动谱面：检测 ${res.bpm} BPM，${noteCount} 个方块。`,
+    bpm: res.bpm,
+    diff: nps < 1 ? "简单" : nps < 1.8 ? "普通" : "困难",
+    env: res.mood,
+    speed: Math.max(12, Math.min(20, Math.round((0.136 * res.bpm + 1.55) * 10) / 10)),
+    colorL: ref.colorL, colorR: ref.colorR, cardBg: ref.cardBg,
+    custom: true,
+    noteCount,
+    duration: res.duration,
+    build: () => ({
+      events: [], buffer,
+      notes: res.notes, walls: res.walls,
+      duration: res.duration + 1,
+      bpm: res.bpm, spb: res.spb, beatOffset: res.phase
+    })
+  };
+  if (G.customIdx == null) { G.customIdx = SONGS.length; SONGS.push(meta); }
+  else SONGS[G.customIdx] = meta;
+  drawUploadReady(meta);
+  updateVRCustomPanel();
+}
+
+function updateVRCustomPanel() {
+  if (!XR.menuGroup || G.customIdx == null) return;
+  while (XR.menuPanels.length < SONGS.length) {
+    const p = makeCanvasPanel(512, 640, 1.05, 1.31);
+    XR.menuGroup.add(p.mesh);
+    XR.menuPanels.push(p);
+  }
+  const n = XR.menuPanels.length;
+  XR.menuPanels.forEach((p, i) => {
+    p.mesh.position.set((i - (n - 1) / 2) * 1.3, 1.55, -2.6);
+    p.mesh.lookAt(0, 1.6, 0.6);
+    drawSongPanel(p.ctx, SONGS[i], false);
+    p.tex.needsUpdate = true;
+  });
+  XR.hovered = -2;
 }
 
 /* ============================================================
@@ -1111,7 +1324,7 @@ function drawVRHUD() {
   c.fillText(String(G.combo), W / 2, 80);
   c.font = "24px sans-serif";
   c.fillStyle = "#8f9bd4";
-  c.fillText("COMBO", W / 2, 134);
+  c.fillText(G.auto ? "COMBO · 纯享演示" : "COMBO", W / 2, 134);
   c.textAlign = "right";
   c.font = "bold 64px sans-serif";
   c.fillStyle = G.hexR;
@@ -1185,6 +1398,27 @@ function drawSongPanel(c, s, hover) {
   }
 }
 
+function drawAutoPanel(hover) {
+  if (!XR.autoPanel) return;
+  const { ctx: c, cv, tex } = XR.autoPanel;
+  const W = cv.width, H = cv.height;
+  c.clearRect(0, 0, W, H);
+  const col = G.auto ? "#ffd76e" : "#6a7494";
+  rr(c, 6, 6, W - 12, H - 12, 22);
+  c.fillStyle = hover ? "rgba(30,36,64,0.9)" : "rgba(14,17,32,0.85)";
+  c.fill();
+  c.lineWidth = hover ? 8 : 4;
+  c.strokeStyle = col;
+  c.shadowColor = col; c.shadowBlur = hover ? 26 : (G.auto ? 14 : 4);
+  c.stroke();
+  c.shadowBlur = 0;
+  c.textAlign = "center"; c.textBaseline = "middle";
+  c.font = "bold 44px sans-serif";
+  c.fillStyle = G.auto ? "#ffd76e" : "#aab3d0";
+  c.fillText(`纯享模式（自动挥剑）：${G.auto ? "开" : "关"}`, W / 2, H / 2);
+  tex.needsUpdate = true;
+}
+
 function buildVRMenu() {
   const g = new THREE.Group();
   g.visible = false;
@@ -1210,6 +1444,11 @@ function buildVRMenu() {
     g.add(p.mesh);
     XR.menuPanels.push(p);
   });
+  XR.autoPanel = makeCanvasPanel(768, 128, 1.85, 0.31);
+  XR.autoPanel.mesh.position.set(0, 0.66, -2.45);
+  XR.autoPanel.mesh.lookAt(0, 1.6, 0.6);
+  drawAutoPanel(false);
+  g.add(XR.autoPanel.mesh);
   scene.add(g);
   XR.menuGroup = g;
 }
@@ -1229,13 +1468,23 @@ const _rc = new THREE.Raycaster();
 const _rcMat = new THREE.Matrix4();
 function updateVRMenuHover() {
   const c = XR.ctrlR || XR.ctrlL;
-  let idx = -1;
+  let idx = -1, hoverAuto = false;
   if (c) {
     _rcMat.identity().extractRotation(c.matrixWorld);
     _rc.ray.origin.setFromMatrixPosition(c.matrixWorld);
     _rc.ray.direction.set(0, 0, -1).applyMatrix4(_rcMat);
-    const hits = _rc.intersectObjects(XR.menuPanels.map(p => p.mesh), false);
-    if (hits.length) idx = XR.menuPanels.findIndex(p => p.mesh === hits[0].object);
+    const targets = XR.menuPanels.map(p => p.mesh);
+    if (XR.autoPanel) targets.push(XR.autoPanel.mesh);
+    const hits = _rc.intersectObjects(targets, false);
+    if (hits.length) {
+      if (XR.autoPanel && hits[0].object === XR.autoPanel.mesh) hoverAuto = true;
+      else idx = XR.menuPanels.findIndex(p => p.mesh === hits[0].object);
+    }
+  }
+  if (hoverAuto !== XR.hoverAuto) {
+    XR.hoverAuto = hoverAuto;
+    drawAutoPanel(hoverAuto);
+    if (hoverAuto) haptic(XR.srcR, 0.2, 20);
   }
   if (idx !== XR.hovered) {
     XR.hovered = idx;
@@ -1253,7 +1502,13 @@ function updateVRMenuHover() {
 function onXRSelect() {
   switch (G.state) {
     case "vrmenu":
-      if (XR.hovered >= 0) startSong(XR.hovered);
+      if (XR.hoverAuto) {
+        G.auto = !G.auto;
+        $("auto-toggle").classList.toggle("on", G.auto);
+        drawAutoPanel(true);
+        if (synth) synth.sfxClick();
+        haptic(XR.srcR, 0.4, 40);
+      } else if (XR.hovered >= 0) startSong(XR.hovered);
       break;
     case "paused": resumeSong(); break;
     case "results":
@@ -1269,7 +1524,7 @@ function onXRSqueeze() {
   }
 }
 function reattachSabers() {
-  if (!XR.active) return;
+  if (!XR.active || G.auto) return;
   if (saberL && XR.ctrlL) saberL.attachTo(XR.ctrlL, true);
   if (saberR && XR.ctrlR) saberR.attachTo(XR.ctrlR, true);
 }
@@ -1387,4 +1642,56 @@ if (location.hash === "#autotest") {
     }, 1500);
   };
   setTimeout(() => step(0, 30, () => step(1, 50, () => step(2, 60, null))), 600);
+}
+
+/* 调试自检：index.html#autotest-auto 纯享模式自动挥剑 3 秒，验证自动命中 */
+if (location.hash === "#autotest-auto") {
+  setTimeout(() => {
+    try {
+      ensureAudio();
+      G.auto = true;
+      startSong(0);
+      const f0 = renderer.info.render.frame;
+      setTimeout(() => {
+        const fps = (renderer.info.render.frame - f0) / 14;
+        console.log(`AUTO score=${G.score} hits=${G.hits} judged=${G.judged} combo=${G.combo} fps=${fps.toFixed(1)}`);
+        if (G.hits > 0 && G.hits === G.judged) console.log("AUTOTEST-AUTO-PASS");
+        else console.error("AUTOTEST-AUTO-FAIL");
+        quitToMenu();
+      }, 14000);
+    } catch (e) { console.error("AUTOTEST-AUTO-FAIL", e); }
+  }, 600);
+}
+
+/* 调试自检：index.html#autotest-upload 合成测试音频→分析→生成谱面→试玩 */
+if (location.hash === "#autotest-upload") {
+  setTimeout(async () => {
+    try {
+      ensureAudio();
+      const sr = 44100, dur = 40, TB = 123.7;
+      const buf = synth.ctx.createBuffer(1, sr * dur, sr);
+      const d = buf.getChannelData(0);
+      const spb2 = 60 / TB;
+      for (let b = 0; b * spb2 < dur; b++) {
+        const o = Math.floor(b * spb2 * sr);
+        for (let i = 0; i < 3000 && o + i < d.length; i++)
+          d[o + i] += Math.sin(2 * Math.PI * 60 * i / sr) * Math.exp(-i / 900) * 0.9;
+        if (b % 2 === 1)
+          for (let i = 0; i < 1500 && o + i < d.length; i++)
+            d[o + i] += (Math.random() * 2 - 1) * Math.exp(-i / 400) * 0.4;
+      }
+      const res = await analyzeAudioBuffer(buf, s => console.log("STAGE " + s));
+      let err = 0;
+      const half = spb2 / 2;
+      for (const n of res.notes) {
+        const dd = ((n.t % half) + half) % half;
+        err += Math.min(dd, half - dd);
+      }
+      console.log(`ANALYZE bpm=${res.bpm}(真值${TB}) phase=${res.phase.toFixed(3)} mood=${res.mood} notes=${res.notes.length} walls=${res.walls.length} gridErr=${(err / res.notes.length * 1000).toFixed(1)}ms`);
+      registerCustomSong("测试曲", buf, res);
+      startSong(G.customIdx);
+      G.startAt = synth.ctx.currentTime - 10;
+      setTimeout(() => { quitToMenu(); console.log("AUTOTEST-UPLOAD-PASS"); }, 1500);
+    } catch (e) { console.error("AUTOTEST-UPLOAD-FAIL", e); }
+  }, 600);
 }

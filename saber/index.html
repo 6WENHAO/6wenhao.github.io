@@ -26,7 +26,7 @@
     -webkit-background-clip:text; background-clip:text; color:transparent;
     filter:drop-shadow(0 0 22px rgba(120,120,255,.45)); text-align:center; }
   #subtitle { margin-top:10px; font-size:15px; letter-spacing:14px; color:#8f9bd4; text-indent:14px; }
-  #cards { display:flex; gap:26px; margin-top:52px; }
+  #cards { display:flex; gap:26px; margin-top:52px; flex-wrap:wrap; justify-content:center; max-width:1200px; }
   .card { position:relative; width:250px; height:330px; border-radius:16px; cursor:pointer; padding:22px 20px;
     background:rgba(255,255,255,.035); border:1px solid rgba(255,255,255,.1); backdrop-filter:blur(6px);
     transition:transform .25s ease, box-shadow .25s ease, border-color .25s; overflow:hidden; }
@@ -40,6 +40,12 @@
   .card p  { font-size:12px; margin-top:10px; line-height:1.7; color:#aab3d0; }
   .card .meta { position:absolute; left:20px; right:20px; bottom:16px; display:flex; justify-content:space-between; font-size:11px; color:#7c86ad; letter-spacing:1px; }
   .card .diff { color:var(--ac); font-weight:700; }
+  .upload-plus { display:flex; align-items:center; justify-content:center; font-size:58px; color:#5a6584; font-weight:300; border:1px dashed rgba(255,255,255,.2); }
+  .env-pick span { display:inline-block; margin:0 3px; padding:2px 10px; border-radius:10px; border:1px solid rgba(255,255,255,.18); cursor:pointer; color:#8f9bd4; font-size:11px; transition:all .15s; }
+  .env-pick span:hover { color:#fff; border-color:#fff; }
+  .env-pick span.sel { color:#fff; border-color:var(--ac); background:rgba(255,255,255,.08); box-shadow:0 0 8px var(--acGlow); }
+  .rechoose { cursor:pointer; color:#8f9bd4; text-decoration:underline; }
+  .rechoose:hover { color:#fff; }
   #controls-hint { margin-top:30px; font-size:13px; color:#67719b; letter-spacing:2px; line-height:2; text-align:center; }
   #controls-hint b { color:#aeb8e8; font-weight:600; }
   .vr-btn { position:relative; z-index:1; margin-top:36px; padding:14px 52px; border-radius:12px; font-size:17px; letter-spacing:3px; cursor:pointer;
@@ -48,6 +54,16 @@
   .vr-btn:hover { transform:scale(1.05); box-shadow:0 0 36px rgba(0,229,255,.6); }
   .vr-btn.vr-off { opacity:.45; cursor:default; border-color:#4a5470; box-shadow:none; background:rgba(255,255,255,.05); }
   .vr-btn.vr-off:hover { transform:none; }
+  #auto-toggle { position:relative; z-index:1; margin-top:26px; display:flex; align-items:center; gap:10px; cursor:pointer;
+    font-size:14px; letter-spacing:2px; color:#8f9bd4; transition:color .2s; }
+  #auto-toggle:hover { color:#cfd6f5; }
+  #auto-toggle .sw { width:40px; height:20px; border-radius:10px; background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.25);
+    position:relative; transition:all .2s; flex-shrink:0; }
+  #auto-toggle .sw::after { content:""; position:absolute; top:2px; left:3px; width:14px; height:14px; border-radius:50%;
+    background:#8f9bd4; transition:all .2s; }
+  #auto-toggle.on { color:#ffd76e; }
+  #auto-toggle.on .sw { background:rgba(255,215,110,.25); border-color:#ffd76e; box-shadow:0 0 12px rgba(255,215,110,.4); }
+  #auto-toggle.on .sw::after { left:21px; background:#ffd76e; }
 
   /* ---------- HUD ---------- */
   #hud { position:fixed; inset:0; pointer-events:none; z-index:20; }
@@ -133,11 +149,12 @@
   <div id="title">节奏光剑</div>
   <div id="subtitle">BEAT SABER · WEB EDITION</div>
   <div id="cards"></div>
+  <div id="auto-toggle"><span class="sw"></span>纯享模式 · 光剑自动演示，只需听歌看景</div>
   <div id="btn-vr" class="vr-btn vr-off">正在检测 VR 支持…</div>
   <div id="controls-hint">
     <b>VR 模式</b> — 左手红剑 · 右手蓝剑 · 指向曲目扣<b>扳机</b>确认 · 游戏中按<b>握把</b>暂停 · 身体侧移躲光墙<br>
     <b>桌面模式</b> — 鼠标挥动双剑镜像斩击（按箭头方向切割）　<b>A / D</b> 侧身躲墙　<b>Esc</b> 暂停<br>
-    黑色球体是炸弹不要碰 · 连击提升倍率 · 能量耗尽即失败 · VR 需通过 localhost 或 HTTPS 访问
+    <b>本地音乐</b> — 点击/拖入音频文件自动生成谱面 · 黑球是炸弹不要碰 · 能量耗尽即失败 · VR 需 localhost 或 HTTPS
   </div>
 </div>
 
@@ -179,6 +196,7 @@
 <script src="https://unpkg.com/three@0.147.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script src="js/audio.js"></script>
 <script src="js/songs.js"></script>
+<script src="js/analyzer.js"></script>
 <script src="js/env.js"></script>
 <script src="js/game.js"></script>
 </body>

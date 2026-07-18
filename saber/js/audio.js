@@ -350,11 +350,24 @@ class MusicPlayer {
   load(events) {
     this.events = events.slice().sort((a, b) => a.t - b.t);
     this.idx = 0;
+    this.buffer = null;
+  }
+  loadBuffer(buffer) { // 本地音乐模式
+    this.events = [];
+    this.idx = 0;
+    this.buffer = buffer;
   }
   start(startTime) {
     this.startTime = startTime;
     this.stopTimer();
-    this.timer = setInterval(() => this.tick(), 30);
+    if (this.buffer) {
+      this.src = this.synth.ctx.createBufferSource();
+      this.src.buffer = this.buffer;
+      this.src.connect(this.synth.music);
+      this.src.start(startTime);
+    } else {
+      this.timer = setInterval(() => this.tick(), 30);
+    }
   }
   tick() {
     const s = this.synth, ct = s.ctx.currentTime;
@@ -389,5 +402,9 @@ class MusicPlayer {
     }
   }
   stopTimer() { if (this.timer) { clearInterval(this.timer); this.timer = null; } }
-  stop() { this.stopTimer(); this.idx = this.events.length; }
+  stop() {
+    this.stopTimer();
+    this.idx = this.events.length;
+    if (this.src) { try { this.src.stop(); } catch (e) { /* 已停止 */ } this.src = null; }
+  }
 }
