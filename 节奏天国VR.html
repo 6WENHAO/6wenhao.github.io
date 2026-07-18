@@ -92,7 +92,7 @@ const sRockHit=t=>{noise(t,0.1,0.5,'lowpass',500);osc('sine',90,t,0.15,0.6,40);}
 const sDing=t=>{osc('triangle',1568,t,0.4,0.24);osc('triangle',2093,t+0.02,0.35,0.14);};
 const sBonk=t=>{osc('square',280,t,0.2,0.26,75);};
 const sWhiff=t=>{noise(t,0.1,0.2,'bandpass',700,1);};
-const sClap=(t,pan)=>{noise(t,0.05,0.55,'bandpass',1150,2,pan);noise(t+0.009,0.045,0.32,'bandpass',1650,2,pan);};
+const sClap=(t,pan)=>{noise(t,0.075,0.85,'bandpass',1150,1.2,pan);noise(t+0.009,0.06,0.5,'bandpass',1650,1.2,pan);};
 const sPitch=t=>{osc('square',920,t,0.07,0.22);};
 const sLob  =t=>{osc('sine',500,t,0.16,0.26,900);};
 const sBat  =t=>{osc('square',1300,t,0.28,0.2,2100);noise(t,0.03,0.42,'highpass',3000);};
